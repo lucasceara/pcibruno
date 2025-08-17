@@ -29,7 +29,6 @@ def carregar_modelos():
 
 loaded_model, loaded_preprocessor, loaded_scaler_y = carregar_modelos()
 
-# Inicialização do st.session_state
 if 'amostras' not in st.session_state:
     st.session_state.amostras = {}
 
@@ -107,7 +106,7 @@ with st.sidebar:
             for i in range(n_amostras):
                 amostra_id = f"Amostra_{i+1}"
                 st.session_state.amostras[amostra_id] = {
-                    "df": pd.DataFrame(columns=['DEFEITO', 'SEVERIDADE', 'Q1', 'Q2', 'Q3', 'Q4', 'TOTAL', 'DENSIDADE', 'VALOR DEDUZIDO']),
+                    "df": pd.DataFrame(columns=['DEFEITO', 'SEVERIDADE', 'SEVERIDADE_CODE', 'Q1', 'Q2', 'Q3', 'Q4', 'TOTAL', 'DENSIDADE', 'VALOR DEDUZIDO']),
                     "posicao": posicoes[i],
                     "area": area,
                     "pci": np.nan
@@ -120,7 +119,7 @@ with st.sidebar:
         idx = len(st.session_state.amostras) + 1
         amostra_id = f"Amostra_Extra_{idx}"
         st.session_state.amostras[amostra_id] = {
-            "df": pd.DataFrame(columns=['DEFEITO', 'SEVERIDADE', 'Q1', 'Q2', 'Q3', 'Q4', 'TOTAL', 'DENSIDADE', 'VALOR DEDUZIDO']),
+            "df": pd.DataFrame(columns=['DEFEITO', 'SEVERIDADE', 'SEVERIDADE_CODE', 'Q1', 'Q2', 'Q3', 'Q4', 'TOTAL', 'DENSIDADE', 'VALOR DEDUZIDO']),
             "posicao": 0.0, "area": 225.0, "pci": np.nan
         }
         st.rerun()
@@ -162,18 +161,9 @@ else:
         
         with st.expander(f"**{amostra_id.replace('_', ' ')}** (Posição: {pos:.1f} m)", expanded=True):
             
-            # --- NOVA SEÇÃO DE ÁREA DENTRO DA AMOSTRA ---
-            area_atual = st.number_input(
-                "Área da Amostra (m²)", 
-                value=area, 
-                min_value=0.1, 
-                format="%.2f", 
-                key=f"area_{amostra_id}"
-            )
-            # Atualiza a área no session_state se ela for alterada
+            area_atual = st.number_input("Área da Amostra (m²)", value=area, min_value=0.1, format="%.2f", key=f"area_{amostra_id}")
             if area_atual != area:
                 st.session_state.amostras[amostra_id]['area'] = area_atual
-                # Recalcula a densidade de todas as linhas existentes com a nova área
                 if not df.empty:
                     df['DENSIDADE'] = (df['TOTAL'] / area_atual) * 100
                     for i, row in df.iterrows():
@@ -181,11 +171,14 @@ else:
                     st.session_state.amostras[amostra_id]['df'] = df
                 st.rerun()
 
-            st.dataframe(df.style.format("{:.2f}", na_rep=""), use_container_width=True)
+            # --- ALTERADO E CORRIGIDO: Formatação aplicada apenas a colunas numéricas ---
+            df_para_exibir = df.drop(columns=['SEVERIDADE_CODE'], errors='ignore') # Oculta a coluna de código
+            numeric_cols = df_para_exibir.select_dtypes(include=np.number).columns
+            format_dict = {col: '{:.2f}' for col in numeric_cols}
+            st.dataframe(df_para_exibir.style.format(format_dict, na_rep=""), use_container_width=True)
             
             with st.form(key=f"form_{amostra_id}", clear_on_submit=True):
                 st.markdown("**Adicionar / Excluir Linha de Defeito**")
-                # ... (resto do formulário)
                 c1,c2,c3,c4,c5,c6 = st.columns([3, 2, 1, 1, 1, 1])
                 defeito = c1.selectbox("Defeito", options=opcoes_defeito, label_visibility="collapsed")
                 severidade_tupla = c2.selectbox("Severidade", options=opcoes_severidade, format_func=lambda x: x[0], label_visibility="collapsed")
@@ -202,7 +195,7 @@ else:
                 if add_button and defeito and severidade_tupla[1]:
                     quantidades = [q1, q2, q3, q4]
                     total = sum(quantidades)
-                    densidade = (total / area_atual) * 100 # Usa a área atual da amostra
+                    densidade = (total / area_atual) * 100
                     valor = prever_valor_deduzido(defeito, severidade_tupla[1], densidade)
                     nova_linha = {'DEFEITO': defeito, 'SEVERIDADE': severidade_tupla[0], 'SEVERIDADE_CODE': severidade_tupla[1], 'Q1': q1, 'Q2': q2, 'Q3': q3, 'Q4': q4, 'TOTAL': total, 'DENSIDADE': densidade, 'VALOR DEDUZIDO': valor}
                     st.session_state.amostras[amostra_id]['df'] = pd.concat([df, pd.DataFrame([nova_linha])], ignore_index=True)
