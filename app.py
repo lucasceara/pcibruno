@@ -165,7 +165,7 @@ else:
     itens_defeitos_ordenados = sorted(mapa_defeitos.items(), key=lambda item: item[1])
     opcoes_defeito = [''] + [f"{num} - {defeito}" for defeito, num in itens_defeitos_ordenados]
     
-    opcoes_severidade = [('', ''), ('Alto (A)', 'A'), ('Médio (M)', 'M'), ('Baixo (L)', 'L')]
+    opcoes_severidade = [('', ''), ('Alto (H)', 'A'), ('Médio (M)', 'M'), ('Baixo (L)', 'L')]
 
     for amostra_id, amostra_data in st.session_state.amostras.items():
         pos = st.session_state.posicoes.get(amostra_id, 0.0)
@@ -216,3 +216,4 @@ else:
             if pd.notna(pci_individual):
                 classificacao_ind, cor_ind = classify_pci_and_get_color(pci_individual)
                 col_b2.metric(label=f"PCI da Amostra", value=f"{pci_individual:.2f}", help=f"Classificação: {classificacao_ind}")
+
