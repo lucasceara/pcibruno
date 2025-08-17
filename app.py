@@ -8,7 +8,7 @@ import joblib
 import math
 
 # ===================================================================
-# 1. CONFIGURAÇÃO DA PÁGINA E CARREGAMENTO DOS MODELOS
+# 1. CONFIGURAÇÃO DA PÁGINA E CARREGAMENTO DE MODELOS
 # ===================================================================
 
 st.set_page_config(
@@ -24,24 +24,21 @@ def carregar_modelos():
         model = tf.keras.models.load_model("modelo_pci.keras")
         preprocessor = joblib.load("preprocessor_pci.joblib")
         scaler_y = joblib.load("scaler_y_pci.joblib")
-        return model, preprocessor, scaler_y, True
+        return model, preprocessor, scaler_y
     except Exception as e:
-        # Exibe um erro persistente se os modelos não puderem ser carregados.
         st.error(f"Erro CRÍTICO ao carregar arquivos do modelo: {e}")
-        st.stop() # Interrompe a execução do app se os modelos não existirem.
+        st.stop()
 
-loaded_model, loaded_preprocessor, loaded_scaler_y, model_pronto = carregar_modelos()
+loaded_model, loaded_preprocessor, loaded_scaler_y = carregar_modelos()
 
-# Inicialização do st.session_state para guardar os dados das tabelas e resultados
-if 'amostras_data' not in st.session_state:
-    st.session_state.amostras_data = {}
-if 'pci_results' not in st.session_state:
-    st.session_state.pci_results = {}
+# Inicialização do st.session_state para guardar os dados entre execuções
+if 'amostras' not in st.session_state:
+    st.session_state.amostras = {} # Dicionário para guardar DataFrames, PCI, etc.
 
 # ===================================================================
-# 2. FUNÇÕES DE CÁLCULO (AMOSTRAGEM E PCI)
+# 2. FUNÇÕES DE CÁLCULO (AMOSTRAGEM E PCI) - O "CÉREBRO" DA APLICAÇÃO
 # ===================================================================
-
+# (Estas são as suas funções de cálculo, copiadas do notebook)
 def calcular_amostras_params(CV, W, e, s, modo_area, area_manual):
     AREA_ALVO, AREA_MIN, AREA_MAX = 225.0, 135.0, 315.0
     if CV <= 0 or W <= 0: return {"error": "CV e W devem ser > 0."}
@@ -68,7 +65,7 @@ def classify_pci_and_get_color(pci_value):
     return "Fora do Intervalo", "black"
 
 def calcular_pci_para_amostra(df_amostra):
-    dv_col_name = ('VALOR DEDUZIDO', '')
+    dv_col_name = 'VALOR DEDUZIDO'
     if df_amostra.empty or dv_col_name not in df_amostra.columns: return np.nan
     df_amostra[dv_col_name] = pd.to_numeric(df_amostra[dv_col_name], errors='coerce')
     df_ordenada = df_amostra.sort_values(by=dv_col_name, ascending=False, na_position='last').reset_index(drop=True)
@@ -83,7 +80,6 @@ def calcular_pci_para_amostra(df_amostra):
         cdv = df_filtrada[dv_col_name].sum()
     else:
         vdt_total = df_filtrada[dv_col_name].sum()
-        # Simplificação da fórmula de VDC para uso no app
         cdv_calc = -0.0018 * (vdt_total**2) + 0.9187 * vdt_total - 18.047
         cdv = max(cdv_calc, hdv)
     return max(0, 100 - cdv)
@@ -115,32 +111,35 @@ with st.sidebar:
         if "error" in res:
             st.error(res["error"])
         else:
-            st.session_state.amostras_data.clear()
-            st.session_state.pci_results.clear()
+            st.session_state.amostras.clear()
             n_amostras, area, posicoes = res['n_minimo'], res['Area_m2'], res['Posicoes_m']
-            st.session_state.area_amostra_calculada = area
-            st.session_state.posicoes = {f"Amostra_{i+1}": posicoes[i] for i in range(n_amostras)}
             for i in range(n_amostras):
                 amostra_id = f"Amostra_{i+1}"
-                st.session_state.amostras_data[amostra_id] = pd.DataFrame(columns=[('DEFEITO', ''), ('SEVERIDADE', ''), ('Q1', ''), ('Q2', ''), ('Q3', ''), ('Q4', ''), ('TOTAL', ''), ('DENSIDADE', ''), ('VALOR DEDUZIDO', '')])
-            st.success(f"{n_amostras} amostras geradas com área de {area:.2f} m².")
+                st.session_state.amostras[amostra_id] = {
+                    "df": pd.DataFrame(columns=['DEFEITO', 'SEVERIDADE', 'Q1', 'Q2', 'Q3', 'Q4', 'TOTAL', 'DENSIDADE', 'VALOR DEDUZIDO']),
+                    "posicao": posicoes[i],
+                    "area": area,
+                    "pci": np.nan
+                }
+            st.success(f"{n_amostras} amostras geradas.")
+            st.rerun()
 
     st.header("2. Gerenciar Amostras")
     if st.button("Adicionar Amostra Extra", use_container_width=True):
         area_extra = area_manual if modo_area == 'Manual' else 225.0
-        idx = len(st.session_state.amostras_data) + 1
+        idx = len(st.session_state.amostras) + 1
         amostra_id = f"Amostra_Extra_{idx}"
-        st.session_state.amostras_data[amostra_id] = pd.DataFrame(columns=[('DEFEITO', ''), ('SEVERIDADE', ''), ('Q1', ''), ('Q2', ''), ('Q3', ''), ('Q4', ''), ('TOTAL', ''), ('DENSIDADE', ''), ('VALOR DEDUZIDO', '')])
-        st.session_state.posicoes[amostra_id] = 0.0 # Posição padrão para extras
+        st.session_state.amostras[amostra_id] = {
+            "df": pd.DataFrame(columns=['DEFEITO', 'SEVERIDADE', 'Q1', 'Q2', 'Q3', 'Q4', 'TOTAL', 'DENSIDADE', 'VALOR DEDUZIDO']),
+            "posicao": 0.0, "area": area_extra, "pci": np.nan
+        }
         st.rerun()
 
-    if st.session_state.amostras_data:
-        amostra_a_excluir = st.selectbox("Excluir Amostra:", options=[""] + list(st.session_state.amostras_data.keys()))
+    if st.session_state.amostras:
+        amostra_a_excluir = st.selectbox("Excluir Amostra:", options=[""] + list(st.session_state.amostras.keys()))
         if st.button("Confirmar Exclusão", use_container_width=True):
-            if amostra_a_excluir and amostra_a_excluir in st.session_state.amostras_data:
-                del st.session_state.amostras_data[amostra_a_excluir]
-                if amostra_a_excluir in st.session_state.pci_results:
-                    del st.session_state.pci_results[amostra_a_excluir]
+            if amostra_a_excluir and amostra_a_excluir in st.session_state.amostras:
+                del st.session_state.amostras[amostra_a_excluir]
                 st.rerun()
 
 # ===================================================================
@@ -148,19 +147,19 @@ with st.sidebar:
 # ===================================================================
 st.title("Ferramenta Integrada de Análise de Pavimentos")
 
-if not st.session_state.amostras_data:
+if not st.session_state.amostras:
     st.info("⬅️ Utilize o painel à esquerda para calcular o número de amostras.")
 else:
     # --- Cálculo e Exibição do PCI Médio ---
-    pcis_validos = [pci for pci in st.session_state.pci_results.values() if pd.notna(pci)]
-    if len(pcis_validos) > 0:
+    pcis_validos = [data['pci'] for data in st.session_state.amostras.values() if pd.notna(data['pci'])]
+    if pcis_validos:
         pci_medio = np.mean(pcis_validos)
         classificacao, cor = classify_pci_and_get_color(pci_medio)
-        st.header(f"Resultado Final da Via")
+        st.header("Resultado Final da Via")
         col1, col2 = st.columns(2)
         col1.metric(label="PCI Médio da Via", value=f"{pci_medio:.2f}")
         col2.markdown(f"#### Classificação: <span style='color:{cor};'>{classificacao}</span>", unsafe_allow_html=True)
-        st.markdown("---")
+    st.markdown("---")
 
     st.header("3. Coleta de Dados e Análise por Amostra")
     
@@ -168,44 +167,49 @@ else:
     opcoes_defeito = [''] + [f"{mapa_defeitos.get(d, '??')} - {d}" for d in sorted(mapa_defeitos.keys())]
     opcoes_severidade = [('', ''), ('Alto (A)', 'A'), ('Médio (M)', 'M'), ('Baixo (L)', 'L')]
 
-    for amostra_id, df in st.session_state.amostras_data.items():
-        pos = st.session_state.posicoes.get(amostra_id, 0.0)
-        area = st.session_state.get('area_amostra_calculada', 225.0)
+    for amostra_id, amostra_data in st.session_state.amostras.items():
+        pos, area, df = amostra_data['posicao'], amostra_data['area'], amostra_data['df']
         
         with st.expander(f"**{amostra_id.replace('_', ' ')}** (Posição: {pos:.1f} m | Área: {area:.2f} m²)", expanded=True):
-            
-            st.dataframe(df.style.format("{:.2f}", na_rep=""), use_container_width=True)
-            
-            with st.form(key=f"form_{amostra_id}", clear_on_submit=True):
-                c1, c2, c3, c4, c5 = st.columns([3, 2, 1, 1, 2])
-                defeito = c1.selectbox("Defeito", options=opcoes_defeito, label_visibility="collapsed")
-                severidade = c2.selectbox("Severidade", options=opcoes_severidade, format_func=lambda x: x[0], label_visibility="collapsed")
-                q1 = c3.number_input("Q1", value=0.0, format="%.2f", label_visibility="collapsed")
-                q2 = c4.number_input("Q2", value=0.0, format="%.2f", label_visibility="collapsed")
-                add_button = c5.form_submit_button("Adicionar Linha", use_container_width=True)
+            col1, col2 = st.columns([3, 1])
+            with col1:
+                st.dataframe(df.style.format("{:.2f}", na_rep=""), use_container_width=True)
+            with col2:
+                if st.button("Calcular PCI da Amostra", key=f"pci_btn_{amostra_id}", use_container_width=True):
+                    pci = calcular_pci_para_amostra(df)
+                    st.session_state.amostras[amostra_id]['pci'] = pci
+                    st.rerun()
+                
+                pci_individual = amostra_data['pci']
+                if pd.notna(pci_individual):
+                    classificacao_ind, cor_ind = classify_pci_and_get_color(pci_individual)
+                    st.metric(label="PCI da Amostra", value=f"{pci_individual:.2f}")
+                    st.markdown(f"**<span style='color:{cor_ind};'>{classificacao_ind}</span>**", unsafe_allow_html=True)
 
-                if add_button and defeito and severidade[1]:
-                    quantidades = [q1, q2, 0.0, 0.0] # Simplificado para 2 Qs, ajuste se necessário
+            with st.form(key=f"form_{amostra_id}", clear_on_submit=True):
+                st.markdown("**Adicionar/Excluir Linha de Defeito**")
+                c1, c2, c3, c4, c5, c6 = st.columns([3, 2, 1, 1, 1, 1])
+                defeito = c1.selectbox("Defeito", options=opcoes_defeito, label_visibility="collapsed")
+                severidade_tupla = c2.selectbox("Severidade", options=opcoes_severidade, format_func=lambda x: x[0], label_visibility="collapsed")
+                q1 = c3.number_input("Q1", min_value=0.0, format="%.2f", label_visibility="collapsed")
+                q2 = c4.number_input("Q2", min_value=0.0, format="%.2f", label_visibility="collapsed")
+                q3 = c5.number_input("Q3", min_value=0.0, format="%.2f", label_visibility="collapsed")
+                q4 = c6.number_input("Q4", min_value=0.0, format="%.2f", label_visibility="collapsed")
+                
+                c_submit_1, c_submit_2, c_submit_3 = st.columns([2, 1, 1])
+                add_button = c_submit_1.form_submit_button("Adicionar Linha")
+                idx_excluir = c_submit_2.number_input("Índice p/ Excluir", min_value=0, max_value=max(0, len(df)-1), step=1)
+                del_button = c_submit_3.form_submit_button("Excluir Linha")
+
+                if add_button and defeito and severidade_tupla[1]:
+                    quantidades = [q1, q2, q3, q4]
                     total = sum(quantidades)
                     densidade = (total / area) * 100
-                    valor = prever_valor_deduzido(defeito, severidade[1], densidade)
-                    nova_linha = {('DEFEITO', ''): defeito, ('SEVERIDADE', ''): severidade[0], ('Q1', ''): q1, ('Q2', ''): q2, ('Q3', ''): 0.0, ('Q4', ''): 0.0, ('TOTAL', ''): total, ('DENSIDADE', ''): densidade, ('VALOR DEDUZIDO', ''): valor}
-                    st.session_state.amostras_data[amostra_id] = pd.concat([df, pd.DataFrame([nova_linha])], ignore_index=True)
+                    valor = prever_valor_deduzido(defeito, severidade_tupla[1], densidade)
+                    nova_linha = {'DEFEITO': defeito, 'SEVERIDADE': severidade_tupla[0], 'Q1': q1, 'Q2': q2, 'Q3': q3, 'Q4': q4, 'TOTAL': total, 'DENSIDADE': densidade, 'VALOR DEDUZIDO': valor}
+                    st.session_state.amostras[amostra_id]['df'] = pd.concat([df, pd.DataFrame([nova_linha])], ignore_index=True)
                     st.rerun()
-
-            col_b1, col_b2, col_b3 = st.columns([1, 1, 2])
-            idx_excluir = col_b1.number_input("Índice p/ Excluir", min_value=0, max_value=max(0, len(df)-1), step=1, key=f"del_idx_{amostra_id}")
-            if col_b2.button("Excluir Linha", key=f"del_btn_{amostra_id}", use_container_width=True):
-                if 0 <= idx_excluir < len(df):
-                    st.session_state.amostras_data[amostra_id] = df.drop(index=idx_excluir).reset_index(drop=True)
+                
+                if del_button and 0 <= idx_excluir < len(df):
+                    st.session_state.amostras[amostra_id]['df'] = df.drop(index=idx_excluir).reset_index(drop=True)
                     st.rerun()
-            
-            if col_b3.button("Calcular PCI desta Amostra", type="primary", key=f"pci_btn_{amostra_id}", use_container_width=True):
-                pci_calculado = calcular_pci_para_amostra(df)
-                st.session_state.pci_results[amostra_id] = pci_calculado
-                st.rerun()
-
-            pci_individual = st.session_state.pci_results.get(amostra_id)
-            if pd.notna(pci_individual):
-                class_ind, cor_ind = classify_pci_and_get_color(pci_individual)
-                st.metric(label=f"PCI da Amostra", value=f"{pci_individual:.2f}", help=f"Classificação: {class_ind}")
