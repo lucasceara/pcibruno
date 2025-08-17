@@ -17,28 +17,42 @@ st.set_page_config(
     layout="wide"
 )
 
-# @st.cache_resource garante que os modelos sejam carregados da memória apenas uma vez.
 @st.cache_resource
 def carregar_modelos():
     try:
         model = tf.keras.models.load_model("modelo_pci.keras")
         preprocessor = joblib.load("preprocessor_pci.joblib")
         scaler_y = joblib.load("scaler_y_pci.joblib")
-        return model, preprocessor, scaler_y
+        # Retorna os objetos carregados em um único tupla para facilitar o manuseio
+        return (model, preprocessor, scaler_y, True)
     except Exception as e:
         st.error(f"Erro CRÍTICO ao carregar arquivos do modelo: {e}")
         st.stop()
 
-loaded_model, loaded_preprocessor, loaded_scaler_y = carregar_modelos()
+# Desempacota os modelos e o status de prontidão
+loaded_model, loaded_preprocessor, loaded_scaler_y, model_pronto = carregar_modelos()
 
-# Inicialização do st.session_state para guardar os dados entre execuções
 if 'amostras' not in st.session_state:
-    st.session_state.amostras = {} # Dicionário para guardar DataFrames, PCI, etc.
+    st.session_state.amostras = {}
 
 # ===================================================================
-# 2. FUNÇÕES DE CÁLCULO (AMOSTRAGEM E PCI) - O "CÉREBRO" DA APLICAÇÃO
+# 2. FUNÇÕES DE CÁLCULO (AMOSTRAGEM E PCI)
 # ===================================================================
-# (Estas são as suas funções de cálculo, copiadas do notebook)
+
+# --- ALTERAÇÃO 1: A função agora recebe os modelos como argumentos ---
+def prever_valor_deduzido(defeito_fmt, severidade_code, densidade, model, preprocessor, scaler_y):
+    # A verificação de `model_pronto` não é mais necessária aqui, pois só chamaremos a função se os modelos estiverem carregados.
+    try:
+        defeito = defeito_fmt.split(' - ', 1)[1]
+        dados = pd.DataFrame([[defeito, severidade_code, densidade]], columns=['DEFEITO', 'SEVERIDADE', 'DENSIDADE (%)'])
+        # Usa os modelos passados como argumento
+        pred_scaled = model.predict(preprocessor.transform(dados), verbose=0)
+        valor_final = scaler_y.inverse_transform(pred_scaled)
+        return round(float(valor_final[0][0]), 2)
+    except Exception:
+        return np.nan
+
+# (O resto das suas funções de cálculo permanecem as mesmas)
 def calcular_amostras_params(CV, W, e, s, modo_area, area_manual):
     AREA_ALVO, AREA_MIN, AREA_MAX = 225.0, 135.0, 315.0
     if CV <= 0 or W <= 0: return {"error": "CV e W devem ser > 0."}
@@ -84,21 +98,12 @@ def calcular_pci_para_amostra(df_amostra):
         cdv = max(cdv_calc, hdv)
     return max(0, 100 - cdv)
 
-def prever_valor_deduzido(defeito_fmt, severidade_code, densidade):
-    if not model_pronto: return np.nan
-    try:
-        defeito = defeito_fmt.split(' - ', 1)[1]
-        dados = pd.DataFrame([[defeito, severidade_code, densidade]], columns=['DEFEITO', 'SEVERIDADE', 'DENSIDADE (%)'])
-        pred_scaled = loaded_model.predict(loaded_preprocessor.transform(dados), verbose=0)
-        valor_final = loaded_scaler_y.inverse_transform(pred_scaled)
-        return round(float(valor_final[0][0]), 2)
-    except Exception: return np.nan
-
 # ===================================================================
-# 3. INTERFACE GRÁFICA (SIDEBAR PARA ENTRADAS E CONTROLES)
+# 3. INTERFACE GRÁFICA (SIDEBAR)
 # ===================================================================
 with st.sidebar:
     st.header("1. Parâmetros da Via")
+    # ... (código da sidebar igual ao anterior) ...
     cv = st.number_input('Comprimento da Via (CV, m)', value=1000.0, format="%.2f")
     largura = st.number_input('Largura da VIA (m)', value=7.0, format="%.2f")
     erro = st.number_input('Erro aceitável (e)', value=5.0, format="%.2f")
@@ -113,26 +118,28 @@ with st.sidebar:
         else:
             st.session_state.amostras.clear()
             n_amostras, area, posicoes = res['n_minimo'], res['Area_m2'], res['Posicoes_m']
+            st.session_state.area_amostra_calculada = area
+            st.session_state.posicoes = {f"Amostra_{i+1}": posicoes[i] for i in range(n_amostras)}
             for i in range(n_amostras):
                 amostra_id = f"Amostra_{i+1}"
                 st.session_state.amostras[amostra_id] = {
                     "df": pd.DataFrame(columns=['DEFEITO', 'SEVERIDADE', 'Q1', 'Q2', 'Q3', 'Q4', 'TOTAL', 'DENSIDADE', 'VALOR DEDUZIDO']),
-                    "posicao": posicoes[i],
-                    "area": area,
                     "pci": np.nan
                 }
             st.success(f"{n_amostras} amostras geradas.")
             st.rerun()
-
+    
     st.header("2. Gerenciar Amostras")
+    # ... (código de gerenciamento de amostras igual ao anterior) ...
     if st.button("Adicionar Amostra Extra", use_container_width=True):
         area_extra = area_manual if modo_area == 'Manual' else 225.0
         idx = len(st.session_state.amostras) + 1
         amostra_id = f"Amostra_Extra_{idx}"
         st.session_state.amostras[amostra_id] = {
             "df": pd.DataFrame(columns=['DEFEITO', 'SEVERIDADE', 'Q1', 'Q2', 'Q3', 'Q4', 'TOTAL', 'DENSIDADE', 'VALOR DEDUZIDO']),
-            "posicao": 0.0, "area": area_extra, "pci": np.nan
+            "pci": np.nan
         }
+        st.session_state.posicoes[amostra_id] = 0.0
         st.rerun()
 
     if st.session_state.amostras:
@@ -150,7 +157,6 @@ st.title("Ferramenta Integrada de Análise de Pavimentos")
 if not st.session_state.amostras:
     st.info("⬅️ Utilize o painel à esquerda para calcular o número de amostras.")
 else:
-    # --- Cálculo e Exibição do PCI Médio ---
     pcis_validos = [data['pci'] for data in st.session_state.amostras.values() if pd.notna(data['pci'])]
     if pcis_validos:
         pci_medio = np.mean(pcis_validos)
@@ -160,7 +166,7 @@ else:
         col1.metric(label="PCI Médio da Via", value=f"{pci_medio:.2f}")
         col2.markdown(f"#### Classificação: <span style='color:{cor};'>{classificacao}</span>", unsafe_allow_html=True)
     st.markdown("---")
-
+    
     st.header("3. Coleta de Dados e Análise por Amostra")
     
     mapa_defeitos = {'BLOCOS DANIFICADOS': 1, 'DEPRESSÕES': 2, 'DANO DE CONTENÇÃO': 3, 'ESPAÇAMENTO EXCESSIVO DAS JUNTAS': 4, 'DIFERENÇA DE ALTURA DO BLOCO': 5, 'ONDULAÇÃO': 6, 'DESLOCAMENTO HORIZONTAL': 7, 'PERDA DE MATERIAL DE REJUNTAMENTO': 8, 'PERDA DE BLOCOS': 9, 'REMENDO': 10, 'DEFORMAÇÃO DE TRILHA DE RODA': 11}
@@ -168,26 +174,16 @@ else:
     opcoes_severidade = [('', ''), ('Alto (A)', 'A'), ('Médio (M)', 'M'), ('Baixo (L)', 'L')]
 
     for amostra_id, amostra_data in st.session_state.amostras.items():
-        pos, area, df = amostra_data['posicao'], amostra_data['area'], amostra_data['df']
+        pos = st.session_state.posicoes.get(amostra_id, 0.0)
+        area = st.session_state.get('area_amostra_calculada', 225.0)
+        df = amostra_data['df']
         
         with st.expander(f"**{amostra_id.replace('_', ' ')}** (Posição: {pos:.1f} m | Área: {area:.2f} m²)", expanded=True):
-            col1, col2 = st.columns([3, 1])
-            with col1:
-                st.dataframe(df.style.format("{:.2f}", na_rep=""), use_container_width=True)
-            with col2:
-                if st.button("Calcular PCI da Amostra", key=f"pci_btn_{amostra_id}", use_container_width=True):
-                    pci = calcular_pci_para_amostra(df)
-                    st.session_state.amostras[amostra_id]['pci'] = pci
-                    st.rerun()
-                
-                pci_individual = amostra_data['pci']
-                if pd.notna(pci_individual):
-                    classificacao_ind, cor_ind = classify_pci_and_get_color(pci_individual)
-                    st.metric(label="PCI da Amostra", value=f"{pci_individual:.2f}")
-                    st.markdown(f"**<span style='color:{cor_ind};'>{classificacao_ind}</span>**", unsafe_allow_html=True)
-
+            st.dataframe(df.style.format("{:.2f}", na_rep=""), use_container_width=True)
+            
             with st.form(key=f"form_{amostra_id}", clear_on_submit=True):
-                st.markdown("**Adicionar/Excluir Linha de Defeito**")
+                st.markdown("**Adicionar / Excluir Linha de Defeito**")
+                # ... (código do formulário igual ao anterior) ...
                 c1, c2, c3, c4, c5, c6 = st.columns([3, 2, 1, 1, 1, 1])
                 defeito = c1.selectbox("Defeito", options=opcoes_defeito, label_visibility="collapsed")
                 severidade_tupla = c2.selectbox("Severidade", options=opcoes_severidade, format_func=lambda x: x[0], label_visibility="collapsed")
@@ -205,7 +201,9 @@ else:
                     quantidades = [q1, q2, q3, q4]
                     total = sum(quantidades)
                     densidade = (total / area) * 100
-                    valor = prever_valor_deduzido(defeito, severidade_tupla[1], densidade)
+                    # --- ALTERAÇÃO 2: Passa os modelos carregados para a função ---
+                    valor = prever_valor_deduzido(defeito, severidade_tupla[1], densidade, loaded_model, loaded_preprocessor, loaded_scaler_y)
+                    
                     nova_linha = {'DEFEITO': defeito, 'SEVERIDADE': severidade_tupla[0], 'Q1': q1, 'Q2': q2, 'Q3': q3, 'Q4': q4, 'TOTAL': total, 'DENSIDADE': densidade, 'VALOR DEDUZIDO': valor}
                     st.session_state.amostras[amostra_id]['df'] = pd.concat([df, pd.DataFrame([nova_linha])], ignore_index=True)
                     st.rerun()
@@ -213,3 +211,14 @@ else:
                 if del_button and 0 <= idx_excluir < len(df):
                     st.session_state.amostras[amostra_id]['df'] = df.drop(index=idx_excluir).reset_index(drop=True)
                     st.rerun()
+
+            col_b1, col_b2 = st.columns([1, 3])
+            if col_b1.button("Calcular PCI da Amostra", type="primary", key=f"pci_btn_{amostra_id}", use_container_width=True):
+                pci_calculado = calcular_pci_para_amostra(df)
+                st.session_state.amostras[amostra_id]['pci'] = pci_calculado
+                st.rerun()
+            
+            pci_individual = amostra_data['pci']
+            if pd.notna(pci_individual):
+                classificacao_ind, cor_ind = classify_pci_and_get_color(pci_individual)
+                col_b2.metric(label=f"PCI da Amostra", value=f"{pci_individual:.2f}", help=f"Classificação: {classificacao_ind}")
