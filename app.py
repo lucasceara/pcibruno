@@ -10,7 +10,6 @@ import math
 # ===================================================================
 # 1. CONFIGURAÇÃO DA PÁGINA E CARREGAMENTO DE MODELOS
 # ===================================================================
-
 st.set_page_config(
     page_title="Ferramenta PCI - Análise de Pavimentos",
     page_icon="ରା",
@@ -30,18 +29,17 @@ def carregar_modelos():
 
 loaded_model, loaded_preprocessor, loaded_scaler_y = carregar_modelos()
 
+# Inicialização do st.session_state
 if 'amostras' not in st.session_state:
     st.session_state.amostras = {}
 
 # ===================================================================
 # 2. FUNÇÕES DE CÁLCULO (AMOSTRAGEM E PCI)
 # ===================================================================
-def calcular_amostras_params(CV, W, e, s, modo_area, area_manual):
-    AREA_ALVO, AREA_MIN, AREA_MAX = 225.0, 135.0, 315.0
+def calcular_amostras_params(CV, W, e, s):
+    AREA_PADRAO = 225.0
     if CV <= 0 or W <= 0: return {"error": "CV e W devem ser > 0."}
-    if modo_area == 'Manual' and not (AREA_MIN <= area_manual <= AREA_MAX):
-        return {"error": f"Área manual inválida. Permitido: {AREA_MIN:.0f}–{AREA_MAX:.0f} m²."}
-    area = AREA_ALVO if modo_area == 'Automático' else area_manual
+    area = AREA_PADRAO
     ca = area / W
     if (CV/ca) <= 1: n_cont = 1.0
     else: n_cont = ( ( (CV/ca) * s**2 ) / ( ((e**2)/4) * ( (CV/ca) - 1 ) + s**2 ) )
@@ -65,13 +63,12 @@ def calcular_pci_para_amostra(df_amostra):
     dv_col_name = 'VALOR DEDUZIDO'
     if df_amostra.empty or dv_col_name not in df_amostra.columns: return np.nan
     df_amostra[dv_col_name] = pd.to_numeric(df_amostra[dv_col_name], errors='coerce')
-    df_ordenada = df_amostra.sort_values(by=dv_col_name, ascending=False, na_position='last').reset_index(drop=True)
-    dv_validos = df_ordenada[dv_col_name].dropna()
+    dv_validos = df_amostra[dv_col_name].dropna()
     if dv_validos.empty: return 100
-    hdv = dv_validos.iloc[0]
+    hdv = dv_validos.max()
     m_calc = 1 + (9/98) * (100 - hdv)
     m = round(min(10, m_calc))
-    df_filtrada = df_ordenada.head(m)
+    df_filtrada = df_amostra.nlargest(m, dv_col_name)
     q = sum(1 for v in df_filtrada[dv_col_name] if v > 2)
     if q <= 1:
         cdv = df_filtrada[dv_col_name].sum()
@@ -99,37 +96,33 @@ with st.sidebar:
     largura = st.number_input('Largura da VIA (m)', value=7.0, format="%.2f")
     erro = st.number_input('Erro aceitável (e)', value=5.0, format="%.2f")
     desvio_padrao = st.number_input('Desvio padrão (s)', value=10.0, format="%.2f")
-    modo_area = st.radio('Modo da Área', ['Automático', 'Manual'], horizontal=True)
-    area_manual = st.number_input('Área Manual (m²)', value=225.0, format="%.2f", disabled=(modo_area == 'Automático'))
 
     if st.button("Calcular Amostragem e Gerar Tabelas", type="primary", use_container_width=True):
-        res = calcular_amostras_params(cv, largura, erro, desvio_padrao, modo_area, area_manual)
+        res = calcular_amostras_params(cv, largura, erro, desvio_padrao)
         if "error" in res:
             st.error(res["error"])
         else:
             st.session_state.amostras.clear()
             n_amostras, area, posicoes = res['n_minimo'], res['Area_m2'], res['Posicoes_m']
-            st.session_state.area_amostra_calculada = area
-            st.session_state.posicoes = {f"Amostra_{i+1}": posicoes[i] for i in range(n_amostras)}
             for i in range(n_amostras):
                 amostra_id = f"Amostra_{i+1}"
                 st.session_state.amostras[amostra_id] = {
                     "df": pd.DataFrame(columns=['DEFEITO', 'SEVERIDADE', 'Q1', 'Q2', 'Q3', 'Q4', 'TOTAL', 'DENSIDADE', 'VALOR DEDUZIDO']),
+                    "posicao": posicoes[i],
+                    "area": area,
                     "pci": np.nan
                 }
-            st.success(f"{n_amostras} amostras geradas.")
+            st.success(f"{n_amostras} amostras geradas com área padrão de {area:.2f} m².")
             st.rerun()
-    
+
     st.header("2. Gerenciar Amostras")
     if st.button("Adicionar Amostra Extra", use_container_width=True):
-        area_extra = area_manual if modo_area == 'Manual' else 225.0
         idx = len(st.session_state.amostras) + 1
         amostra_id = f"Amostra_Extra_{idx}"
         st.session_state.amostras[amostra_id] = {
             "df": pd.DataFrame(columns=['DEFEITO', 'SEVERIDADE', 'Q1', 'Q2', 'Q3', 'Q4', 'TOTAL', 'DENSIDADE', 'VALOR DEDUZIDO']),
-            "pci": np.nan
+            "posicao": 0.0, "area": 225.0, "pci": np.nan
         }
-        st.session_state.posicoes[amostra_id] = 0.0
         st.rerun()
 
     if st.session_state.amostras:
@@ -151,7 +144,7 @@ else:
     if pcis_validos:
         pci_medio = np.mean(pcis_validos)
         classificacao, cor = classify_pci_and_get_color(pci_medio)
-        st.header(f"Resultado Final da Via")
+        st.header("Resultado Final da Via")
         col1, col2 = st.columns(2)
         col1.metric(label="PCI Médio da Via", value=f"{pci_medio:.2f}")
         col2.markdown(f"#### Classificação: <span style='color:{cor};'>{classificacao}</span>", unsafe_allow_html=True)
@@ -160,26 +153,39 @@ else:
     st.header("3. Coleta de Dados e Análise por Amostra")
     
     mapa_defeitos = {'BLOCOS DANIFICADOS': 1, 'DEPRESSÕES': 2, 'DANO DE CONTENÇÃO': 3, 'ESPAÇAMENTO EXCESSIVO DAS JUNTAS': 4, 'DIFERENÇA DE ALTURA DO BLOCO': 5, 'ONDULAÇÃO': 6, 'DESLOCAMENTO HORIZONTAL': 7, 'PERDA DE MATERIAL DE REJUNTAMENTO': 8, 'PERDA DE BLOCOS': 9, 'REMENDO': 10, 'DEFORMAÇÃO DE TRILHA DE RODA': 11}
-    
-    # --- ALTERADO E CORRIGIDO: Ordena os defeitos pelo número antes de criar a lista de opções ---
     itens_defeitos_ordenados = sorted(mapa_defeitos.items(), key=lambda item: item[1])
     opcoes_defeito = [''] + [f"{num} - {defeito}" for defeito, num in itens_defeitos_ordenados]
-    
     opcoes_severidade = [('', ''), ('Alto (H)', 'A'), ('Médio (M)', 'M'), ('Baixo (L)', 'L')]
 
     for amostra_id, amostra_data in st.session_state.amostras.items():
-        pos = st.session_state.posicoes.get(amostra_id, 0.0)
-        area = st.session_state.get('area_amostra_calculada', 225.0)
-        df = amostra_data['df']
+        pos, area, df = amostra_data['posicao'], amostra_data['area'], amostra_data['df']
         
-        with st.expander(f"**{amostra_id.replace('_', ' ')}** (Posição: {pos:.1f} m | Área: {area:.2f} m²)", expanded=True):
-            df_para_exibir = df.copy()
-            numeric_cols = df_para_exibir.select_dtypes(include=np.number).columns
-            format_dict = {col: '{:.2f}' for col in numeric_cols}
-            st.dataframe(df_para_exibir.style.format(format_dict, na_rep=""), use_container_width=True)
+        with st.expander(f"**{amostra_id.replace('_', ' ')}** (Posição: {pos:.1f} m)", expanded=True):
+            
+            # --- NOVA SEÇÃO DE ÁREA DENTRO DA AMOSTRA ---
+            area_atual = st.number_input(
+                "Área da Amostra (m²)", 
+                value=area, 
+                min_value=0.1, 
+                format="%.2f", 
+                key=f"area_{amostra_id}"
+            )
+            # Atualiza a área no session_state se ela for alterada
+            if area_atual != area:
+                st.session_state.amostras[amostra_id]['area'] = area_atual
+                # Recalcula a densidade de todas as linhas existentes com a nova área
+                if not df.empty:
+                    df['DENSIDADE'] = (df['TOTAL'] / area_atual) * 100
+                    for i, row in df.iterrows():
+                        df.loc[i, 'VALOR DEDUZIDO'] = prever_valor_deduzido(row['DEFEITO'], row['SEVERIDADE_CODE'], df.loc[i, 'DENSIDADE'])
+                    st.session_state.amostras[amostra_id]['df'] = df
+                st.rerun()
+
+            st.dataframe(df.style.format("{:.2f}", na_rep=""), use_container_width=True)
             
             with st.form(key=f"form_{amostra_id}", clear_on_submit=True):
                 st.markdown("**Adicionar / Excluir Linha de Defeito**")
+                # ... (resto do formulário)
                 c1,c2,c3,c4,c5,c6 = st.columns([3, 2, 1, 1, 1, 1])
                 defeito = c1.selectbox("Defeito", options=opcoes_defeito, label_visibility="collapsed")
                 severidade_tupla = c2.selectbox("Severidade", options=opcoes_severidade, format_func=lambda x: x[0], label_visibility="collapsed")
@@ -196,9 +202,9 @@ else:
                 if add_button and defeito and severidade_tupla[1]:
                     quantidades = [q1, q2, q3, q4]
                     total = sum(quantidades)
-                    densidade = (total / area) * 100
+                    densidade = (total / area_atual) * 100 # Usa a área atual da amostra
                     valor = prever_valor_deduzido(defeito, severidade_tupla[1], densidade)
-                    nova_linha = {'DEFEITO': defeito, 'SEVERIDADE': severidade_tupla[0], 'Q1': q1, 'Q2': q2, 'Q3': q3, 'Q4': q4, 'TOTAL': total, 'DENSIDADE': densidade, 'VALOR DEDUZIDO': valor}
+                    nova_linha = {'DEFEITO': defeito, 'SEVERIDADE': severidade_tupla[0], 'SEVERIDADE_CODE': severidade_tupla[1], 'Q1': q1, 'Q2': q2, 'Q3': q3, 'Q4': q4, 'TOTAL': total, 'DENSIDADE': densidade, 'VALOR DEDUZIDO': valor}
                     st.session_state.amostras[amostra_id]['df'] = pd.concat([df, pd.DataFrame([nova_linha])], ignore_index=True)
                     st.rerun()
                 
@@ -216,4 +222,3 @@ else:
             if pd.notna(pci_individual):
                 classificacao_ind, cor_ind = classify_pci_and_get_color(pci_individual)
                 col_b2.metric(label=f"PCI da Amostra", value=f"{pci_individual:.2f}", help=f"Classificação: {classificacao_ind}")
-
