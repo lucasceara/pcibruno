@@ -119,7 +119,7 @@ with st.sidebar:
                 }
             st.success(f"{n_amostras} amostras geradas.")
             st.rerun()
-
+    
     st.header("2. Gerenciar Amostras")
     if st.button("Adicionar Amostra Extra", use_container_width=True):
         area_extra = area_manual if modo_area == 'Manual' else 225.0
@@ -160,7 +160,11 @@ else:
     st.header("3. Coleta de Dados e Análise por Amostra")
     
     mapa_defeitos = {'BLOCOS DANIFICADOS': 1, 'DEPRESSÕES': 2, 'DANO DE CONTENÇÃO': 3, 'ESPAÇAMENTO EXCESSIVO DAS JUNTAS': 4, 'DIFERENÇA DE ALTURA DO BLOCO': 5, 'ONDULAÇÃO': 6, 'DESLOCAMENTO HORIZONTAL': 7, 'PERDA DE MATERIAL DE REJUNTAMENTO': 8, 'PERDA DE BLOCOS': 9, 'REMENDO': 10, 'DEFORMAÇÃO DE TRILHA DE RODA': 11}
-    opcoes_defeito = [''] + [f"{mapa_defeitos.get(d, '??')} - {d}" for d in sorted(mapa_defeitos.keys())]
+    
+    # --- ALTERADO E CORRIGIDO: Ordena os defeitos pelo número antes de criar a lista de opções ---
+    itens_defeitos_ordenados = sorted(mapa_defeitos.items(), key=lambda item: item[1])
+    opcoes_defeito = [''] + [f"{num} - {defeito}" for defeito, num in itens_defeitos_ordenados]
+    
     opcoes_severidade = [('', ''), ('Alto (A)', 'A'), ('Médio (M)', 'M'), ('Baixo (L)', 'L')]
 
     for amostra_id, amostra_data in st.session_state.amostras.items():
@@ -169,26 +173,11 @@ else:
         df = amostra_data['df']
         
         with st.expander(f"**{amostra_id.replace('_', ' ')}** (Posição: {pos:.1f} m | Área: {area:.2f} m²)", expanded=True):
+            df_para_exibir = df.copy()
+            numeric_cols = df_para_exibir.select_dtypes(include=np.number).columns
+            format_dict = {col: '{:.2f}' for col in numeric_cols}
+            st.dataframe(df_para_exibir.style.format(format_dict, na_rep=""), use_container_width=True)
             
-            col1, col2 = st.columns([3, 1])
-            with col1:
-                # --- ALTERADO E CORRIGIDO: Formatação aplicada apenas a colunas numéricas ---
-                df_para_exibir = df.copy()
-                numeric_cols = df_para_exibir.select_dtypes(include=np.number).columns
-                format_dict = {col: '{:.2f}' for col in numeric_cols}
-                st.dataframe(df_para_exibir.style.format(format_dict, na_rep=""), use_container_width=True)
-
-            with col2:
-                if st.button("Calcular PCI da Amostra", key=f"pci_btn_{amostra_id}", use_container_width=True):
-                    pci_calculado = calcular_pci_para_amostra(df)
-                    st.session_state.amostras[amostra_id]['pci'] = pci_calculado
-                    st.rerun()
-                
-                pci_individual = amostra_data['pci']
-                if pd.notna(pci_individual):
-                    classificacao_ind, cor_ind = classify_pci_and_get_color(pci_individual)
-                    st.metric(label=f"PCI da Amostra", value=f"{pci_individual:.2f}", help=f"Classificação: {classificacao_ind}")
-
             with st.form(key=f"form_{amostra_id}", clear_on_submit=True):
                 st.markdown("**Adicionar / Excluir Linha de Defeito**")
                 c1,c2,c3,c4,c5,c6 = st.columns([3, 2, 1, 1, 1, 1])
@@ -216,3 +205,14 @@ else:
                 if del_button and 0 <= idx_excluir < len(df):
                     st.session_state.amostras[amostra_id]['df'] = df.drop(index=idx_excluir).reset_index(drop=True)
                     st.rerun()
+
+            col_b1, col_b2 = st.columns([1, 3])
+            if col_b1.button("Calcular PCI desta Amostra", type="primary", key=f"pci_btn_{amostra_id}", use_container_width=True):
+                pci_calculado = calcular_pci_para_amostra(df)
+                st.session_state.amostras[amostra_id]['pci'] = pci_calculado
+                st.rerun()
+            
+            pci_individual = amostra_data['pci']
+            if pd.notna(pci_individual):
+                classificacao_ind, cor_ind = classify_pci_and_get_color(pci_individual)
+                col_b2.metric(label=f"PCI da Amostra", value=f"{pci_individual:.2f}", help=f"Classificação: {classificacao_ind}")
